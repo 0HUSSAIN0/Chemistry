@@ -1,0 +1,404 @@
+<!DOCTYPE html>
+<html lang="ar">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <title>VaporCity: Apocalypse Edition</title>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+    <style>
+        body { margin: 0; overflow: hidden; background: #000; touch-action: none; font-family: 'Segoe UI', Arial, sans-serif; }
+        
+        /* شاشات الحالة */
+        #loading { position: fixed; inset: 0; background: #000; color: #ff0055; display: flex; flex-direction: column; align-items: center; justify-content: center; z-index: 9999; }
+        #death-screen { position: fixed; inset: 0; background: rgba(100, 0, 0, 0.7); display: none; flex-direction: column; align-items: center; justify-content: center; z-index: 5000; backdrop-filter: blur(10px); }
+        #wasted-text { color: white; font-size: 72px; font-weight: 900; letter-spacing: 15px; margin-bottom: 20px; text-shadow: 5px 5px 0 black; }
+        
+        /* واجهة المستخدم (HUD) */
+        #hud {
+            position: absolute; top: 20px; left: 20px; color: white; z-index: 100;
+            background: rgba(0,0,0,0.85); padding: 15px; border-radius: 10px;
+            border-left: 6px solid #ff0055; width: 220px; pointer-events: none;
+        }
+        #health-bar { width: 100%; height: 12px; background: #400; margin-top: 10px; border-radius: 6px; border: 1px solid #ff0055; overflow: hidden; }
+        #health-fill { width: 100%; height: 100%; background: linear-gradient(90deg, #ff0055, #ff6b6b); transition: width 0.3s; }
+        #wanted-stars { color: #ffd700; font-size: 28px; margin-top: 5px; text-shadow: 0 0 10px #ffd700; }
+        #speedo { font-size: 26px; font-weight: bold; color: #00fbff; font-family: monospace; }
+        
+        /* الرادار */
+        #radar { position: absolute; bottom: 20px; right: 20px; width: 140px; height: 140px; background: rgba(0,20,0,0.8); border: 3px solid #00fbff; border-radius: 50%; overflow: hidden; box-shadow: 0 0 20px rgba(0,251,255,0.4); }
+        .radar-dot { position: absolute; width: 6px; height: 6px; border-radius: 50%; transform: translate(-50%, -50%); }
+
+        /* أزرار التحكم */
+        #ui-layer { position: absolute; inset: 0; pointer-events: none; z-index: 200; }
+        #joy-base { position: absolute; bottom: 50px; left: 50px; width: 120px; height: 120px; background: rgba(255,255,255,0.1); border: 2px solid white; border-radius: 50%; pointer-events: auto; }
+        #joy-knob { position: absolute; top: 50%; left: 50%; width: 50px; height: 50px; background: #fff; border-radius: 50%; transform: translate(-50%, -50%); }
+        
+        .action-btn { position: absolute; width: 90px; height: 90px; border: none; border-radius: 50%; color: white; font-weight: bold; pointer-events: auto; font-size: 16px; box-shadow: 0 5px 15px rgba(0,0,0,0.5); }
+        #btn-shoot { bottom: 160px; right: 40px; background: radial-gradient(circle, #ff5500, #aa0000); }
+        #btn-action { bottom: 60px; right: 40px; background: radial-gradient(circle, #00fbff, #0055ff); }
+        #btn-exit { display: none; bottom: 60px; right: 150px; background: #ff416c; width: 70px; height: 70px; }
+        
+        #flash { position: fixed; inset: 0; background: white; opacity: 0; pointer-events: none; z-index: 1000; }
+    </style>
+</head>
+<body>
+
+    <div id="loading"><h1>VAPOR CITY: APOCALYPSE</h1><p>Initializing Game Engine...</p></div>
+
+    <div id="death-screen">
+        <div id="wasted-text">WASTED</div>
+        <button onclick="location.reload()" style="padding: 15px 30px; font-weight: bold; border-radius: 5px; border:none; cursor:pointer;">RESPAWN</button>
+    </div>
+
+    <div id="flash"></div>
+
+    <div id="hud">
+        <div id="speedo">000 KM/H</div>
+        <div id="health-bar"><div id="health-fill"></div></div>
+        <div id="wanted-stars"></div>
+        <div style="font-size: 11px; margin-top: 5px; opacity: 0.6;">SYSTEM: HELI_SUPPORT_READY</div>
+    </div>
+
+    <div id="radar"><div id="radar-dots" style="position:relative; width:100%; height:100%;"></div></div>
+
+    <div id="ui-layer">
+        <div id="joy-base"><div id="joy-knob"></div></div>
+        <button id="btn-shoot" class="action-btn">FIRE</button>
+        <button id="btn-action" class="action-btn">HIT/CAR</button>
+        <button id="btn-exit" class="action-btn">EXIT</button>
+    </div>
+
+    <script>
+        /**
+         * المحرك والمتغيرات العالمية
+         */
+        let scene, camera, renderer, player, sun, heli;
+        let joyPos = { x: 0, y: 0, active: false };
+        let citizens = [], interactiveCars = [], policeCars = [], particles = [];
+        let playerStats = { health: 100, wanted: 0, isDead: false };
+        let carPhys = { speed: 0, angle: 0, accel: 0.025, friction: 0.97, maxSpeed: 0.85 };
+        let currentCar = null;
+        let time = 0;
+
+        function init() {
+            scene = new THREE.Scene();
+            scene.background = new THREE.Color(0x1a1a2e);
+            scene.fog = new THREE.Fog(0x1a1a2e, 50, 800);
+
+            camera = new THREE.PerspectiveCamera(60, window.innerWidth / window.innerHeight, 0.1, 3000);
+            renderer = new THREE.WebGLRenderer({ antialias: true });
+            renderer.setSize(window.innerWidth, window.innerHeight);
+            renderer.shadowMap.enabled = true;
+            document.body.appendChild(renderer.domElement);
+
+            sun = new THREE.DirectionalLight(0xffffff, 1.0);
+            sun.position.set(100, 200, 100);
+            scene.add(sun, new THREE.AmbientLight(0x404040, 0.6));
+
+            buildWorld();
+            spawnEntities();
+            setupControls();
+            
+            document.getElementById('loading').style.display = 'none';
+            animate();
+        }
+
+        /**
+         * بناء الأجسام المعقدة
+         */
+        function createHuman(color, hasWeapon = false) {
+            const g = new THREE.Group();
+            const mat = new THREE.MeshPhongMaterial({color: color});
+            const skin = new THREE.MeshPhongMaterial({color: 0xffdbac});
+            
+            const torso = new THREE.Mesh(new THREE.BoxGeometry(1.2, 1.8, 0.7), mat);
+            torso.position.y = 1.9;
+            const head = new THREE.Mesh(new THREE.SphereGeometry(0.45, 12, 12), skin);
+            head.position.y = 3.1;
+            
+            const limb = new THREE.BoxGeometry(0.4, 1.5, 0.4);
+            const ra = new THREE.Mesh(limb, mat); ra.position.set(0.9, 1.9, 0);
+            const la = new THREE.Mesh(limb, mat); la.position.set(-0.9, 1.9, 0);
+            const rl = new THREE.Mesh(limb, mat); rl.position.set(0.4, 0.75, 0);
+            const ll = new THREE.Mesh(limb, mat); ll.position.set(-0.4, 0.75, 0);
+            
+            g.add(torso, head, ra, la, rl, ll);
+            if(hasWeapon) {
+                const gun = new THREE.Mesh(new THREE.BoxGeometry(0.3, 0.4, 1.1), new THREE.MeshPhongMaterial({color: 0x222222}));
+                gun.position.set(0, -0.6, 0.5); ra.add(gun);
+            }
+            g.ra = ra; return g;
+        }
+
+        function createDetailedCar(color, isPolice = false) {
+            const car = new THREE.Group();
+            const bodyMat = new THREE.MeshPhongMaterial({color: isPolice ? 0x050505 : color});
+            const body = new THREE.Mesh(new THREE.BoxGeometry(5.8, 1.8, 12), bodyMat);
+            body.position.y = 1.2; car.add(body);
+            
+            const glass = new THREE.Mesh(new THREE.BoxGeometry(4.8, 1.4, 6.5), new THREE.MeshPhongMaterial({color: 0x111111}));
+            glass.position.set(0, 2.5, -0.5); car.add(glass);
+
+            if(isPolice) {
+                const s = new THREE.Mesh(new THREE.BoxGeometry(2.5, 0.4, 0.8), new THREE.MeshBasicMaterial({color: 0xff0000}));
+                s.position.y = 3.3; car.add(s); car.siren = s;
+            }
+
+            const wMat = new THREE.MeshPhongMaterial({color: 0x111111});
+            [[2.8,0.8,4.5], [-2.8,0.8,4.5], [2.8,0.8,-4.5], [-2.8,0.8,-4.5]].forEach(p => {
+                const w = new THREE.Mesh(new THREE.CylinderGeometry(0.9, 0.9, 1.3, 16), wMat);
+                w.rotation.z = Math.PI/2; w.position.set(...p); car.add(w);
+            });
+            car.hp = 100; car.isExploded = false;
+            return car;
+        }
+
+        function createHeli() {
+            const h = new THREE.Group();
+            const body = new THREE.Mesh(new THREE.BoxGeometry(4, 4, 12), new THREE.MeshPhongMaterial({color: 0x000000}));
+            const rotor = new THREE.Mesh(new THREE.BoxGeometry(15, 0.2, 1), new THREE.MeshPhongMaterial({color: 0x222222}));
+            rotor.position.y = 2.5; h.add(body, rotor);
+            h.rotor = rotor; h.position.y = 60;
+            return h;
+        }
+
+        /**
+         * بناء العالم
+         */
+        function buildWorld() {
+            const ground = new THREE.Mesh(new THREE.PlaneGeometry(5000, 5000), new THREE.MeshPhongMaterial({color: 0x222222}));
+            ground.rotation.x = -Math.PI/2; scene.add(ground);
+            
+            const road = new THREE.Mesh(new THREE.PlaneGeometry(100, 5000), new THREE.MeshPhongMaterial({color: 0x111111}));
+            road.rotation.x = -Math.PI/2; road.position.y = 0.05; scene.add(road);
+
+            for(let i=-6; i<=6; i++) {
+                if(i===0) continue;
+                for(let j=-5; j<=5; j++) {
+                    const h = 60 + Math.random()*150;
+                    const b = new THREE.Mesh(new THREE.BoxGeometry(50, h, 50), new THREE.MeshPhongMaterial({color: 0x222244}));
+                    b.position.set(i*180, h/2, j*150); scene.add(b);
+                    
+                    const light = new THREE.Mesh(new THREE.BoxGeometry(51, 8, 35), new THREE.MeshBasicMaterial({color: 0x00fbff, transparent: true, opacity: 0.2}));
+                    light.position.y = h*0.8; b.add(light);
+                }
+            }
+        }
+
+        function spawnEntities() {
+            player = createHuman(0x333333, true);
+            player.position.set(35, 0, 0); scene.add(player);
+
+            const colors = [0xff0055, 0x00fbff, 0xffcc00];
+            for(let i=0; i<8; i++) {
+                const car = createDetailedCar(colors[i%3]);
+                car.position.set(20, 0, i * 180 - 600);
+                scene.add(car); interactiveCars.push(car);
+            }
+
+            for(let i=0; i<40; i++) {
+                const npc = createHuman(0x5555ff);
+                npc.position.set((Math.random()-0.5)*800, 0, (Math.random()-0.5)*800);
+                scene.add(npc);
+                citizens.push({mesh: npc, vel: new THREE.Vector3(0.15,0,0.15), timer: 100, dead: false, scared: false});
+            }
+        }
+
+        /**
+         * التحكم والقتال
+         */
+        function setupControls() {
+            const base = document.getElementById('joy-base');
+            const knob = document.getElementById('joy-knob');
+            const handle = (e) => {
+                if(playerStats.isDead) return;
+                const t = e.touches[0]; const r = base.getBoundingClientRect();
+                const dx = t.clientX - (r.left + 60); const dy = t.clientY - (r.top + 60);
+                const d = Math.min(Math.hypot(dx, dy), 60);
+                joyPos = { x: dx/60, y: dy/60, active: true };
+                knob.style.transform = `translate(calc(-50% + ${dx/60*d}px), calc(-50% + ${dy/60*d}px))`;
+            };
+            base.addEventListener('touchstart', (e)=>{ e.preventDefault(); handle(e); });
+            base.addEventListener('touchmove', (e)=>{ e.preventDefault(); handle(e); });
+            base.addEventListener('touchend', ()=>{ joyPos.active = false; knob.style.transform = 'translate(-50%,-50%)'; });
+
+            document.getElementById('btn-action').onclick = () => {
+                if(playerStats.isDead) return;
+                if(!currentCar) {
+                    let car = interactiveCars.find(c => !c.isExploded && player.position.distanceTo(c.position) < 22);
+                    if(car) {
+                        currentCar = car; scene.remove(player);
+                        document.getElementById('btn-exit').style.display = 'block';
+                    } else {
+                        player.ra.rotation.x = -1.5; setTimeout(()=>player.ra.rotation.x=0, 200);
+                        checkCollision(10);
+                    }
+                }
+            };
+            document.getElementById('btn-shoot').onclick = () => { if(!playerStats.isDead && !currentCar) shoot(); };
+            document.getElementById('btn-exit').onclick = () => {
+                player.position.copy(currentCar.position).add(new THREE.Vector3(15, 0, 0));
+                scene.add(player); currentCar = null;
+                document.getElementById('btn-exit').style.display = 'none';
+            };
+        }
+
+        function shoot() {
+            document.getElementById('flash').style.opacity = '0.4';
+            setTimeout(()=>document.getElementById('flash').style.opacity='0', 50);
+            
+            const dir = new THREE.Vector3(Math.sin(player.rotation.y), 0, Math.cos(player.rotation.y));
+            
+            // إصابة المشاة
+            citizens.forEach(c => {
+                if(!c.dead) {
+                    const toNPC = c.mesh.position.clone().sub(player.position).normalize();
+                    if(player.position.distanceTo(c.mesh.position) < 80 && toNPC.dot(dir) > 0.98) killNPC(c);
+                }
+            });
+
+            // إصابة السيارات
+            interactiveCars.forEach(car => {
+                if(!car.isExploded) {
+                    const toCar = car.position.clone().sub(player.position).normalize();
+                    if(player.position.distanceTo(car.position) < 100 && toCar.dot(dir) > 0.95) {
+                        car.hp -= 25;
+                        createExplosion(car.position, 0xffaa00, 5);
+                        if(car.hp <= 0) explodeVehicle(car);
+                    }
+                }
+            });
+        }
+
+        function explodeVehicle(car) {
+            car.isExploded = true;
+            createExplosion(car.position, 0xff4400, 30);
+            car.traverse(c => { if(c.isMesh) c.material = new THREE.MeshPhongMaterial({color: 0x111111}); });
+            if(currentCar === car) document.getElementById('btn-exit').click();
+            playerStats.wanted = 5;
+            updateHUD();
+        }
+
+        function createExplosion(pos, color, count) {
+            for(let i=0; i<count; i++) {
+                const p = new THREE.Mesh(new THREE.SphereGeometry(0.5), new THREE.MeshBasicMaterial({color: color}));
+                p.position.copy(pos).add(new THREE.Vector3((Math.random()-0.5)*5, 2, (Math.random()-0.5)*5));
+                p.vel = new THREE.Vector3((Math.random()-0.5)*0.5, Math.random()*0.5, (Math.random()-0.5)*0.5);
+                p.life = 1.0;
+                scene.add(p); particles.push(p);
+            }
+        }
+
+        function killNPC(npc) {
+            npc.dead = true; npc.mesh.rotation.x = Math.PI/2; npc.mesh.position.y = 0.5;
+            playerStats.wanted = Math.min(playerStats.wanted + 1, 5);
+            updateHUD();
+            if(playerStats.wanted >= 2 && policeCars.length < 4) spawnPolice();
+            if(playerStats.wanted === 5 && !heli) spawnHeli();
+        }
+
+        function spawnPolice() {
+            const p = createDetailedCar(0x000000, true);
+            p.position.set(0, 0, (currentCar || player).position.z - 150);
+            scene.add(p); policeCars.push({mesh: p, speed: 0.6});
+        }
+
+        function spawnHeli() {
+            heli = createHeli();
+            scene.add(heli);
+        }
+
+        function updateHUD() {
+            document.getElementById('health-fill').style.width = playerStats.health + '%';
+            document.getElementById('wanted-stars').innerText = "★".repeat(playerStats.wanted);
+        }
+
+        /**
+         * الحلقة البرمجية الرئيسية
+         */
+        function animate() {
+            requestAnimationFrame(animate);
+            if(playerStats.isDead) return;
+
+            time += 0.002;
+            sun.intensity = Math.max(0.3, Math.sin(time) + 0.8);
+
+            if(currentCar) {
+                if(joyPos.active) {
+                    carPhys.speed -= joyPos.y * carPhys.accel;
+                    carPhys.angle -= joyPos.x * 0.045;
+                }
+                carPhys.speed *= carPhys.friction;
+                currentCar.rotation.y = carPhys.angle;
+                currentCar.position.x += Math.sin(carPhys.angle) * carPhys.speed;
+                currentCar.position.z += Math.cos(carPhys.angle) * carPhys.speed;
+                camera.position.lerp(new THREE.Vector3(currentCar.position.x - Math.sin(carPhys.angle)*45, 20, currentCar.position.z - Math.cos(carPhys.angle)*45), 0.1);
+                camera.lookAt(currentCar.position);
+                document.getElementById('speedo').innerText = `${Math.round(Math.abs(carPhys.speed*200))} KM/H`;
+                checkCollision(10);
+            } else {
+                if(joyPos.active) {
+                    player.position.x += joyPos.x * 0.4; player.position.z += joyPos.y * 0.4;
+                    player.rotation.y = Math.atan2(-joyPos.x, -joyPos.y);
+                }
+                camera.position.lerp(new THREE.Vector3(player.position.x, 18, player.position.z + 35), 0.1);
+                camera.lookAt(player.position.x, 2, player.position.z);
+                document.getElementById('speedo').innerText = "ON FOOT";
+            }
+
+            // تحديث الشرطة والمروحية
+            policeCars.forEach(p => {
+                const target = (currentCar || player).position;
+                const angle = Math.atan2(target.x - p.mesh.position.x, target.z - p.mesh.position.z);
+                p.mesh.rotation.y = angle;
+                p.mesh.position.x += Math.sin(angle) * p.speed;
+                p.mesh.position.z += Math.cos(angle) * p.speed;
+                if(p.mesh.siren) p.mesh.siren.material.color.setHex(Date.now() % 300 > 150 ? 0xff0000 : 0x0000ff);
+                if(p.mesh.position.distanceTo(target) < 12) damagePlayer(0.4);
+            });
+
+            if(heli) {
+                const t = (currentCar || player).position;
+                heli.position.lerp(new THREE.Vector3(t.x, 60, t.z + 20), 0.02);
+                heli.rotor.rotation.y += 0.5;
+                heli.lookAt(t);
+                if(Math.random() > 0.95) damagePlayer(5); // إطلاق نار من المروحية
+            }
+
+            // الجسد والمارة
+            citizens.forEach(c => {
+                if(!c.dead) {
+                    const speed = c.scared ? 0.6 : 0.15;
+                    c.mesh.position.add(c.vel.clone().multiplyScalar(c.scared ? 4 : 1));
+                    if(--c.timer < 0) {
+                        c.vel.set((Math.random()-0.5)*0.2, 0, (Math.random()-0.5)*0.2);
+                        c.timer = 100 + Math.random()*200;
+                        c.mesh.rotation.y = Math.atan2(-c.vel.x, -c.vel.z);
+                    }
+                }
+            });
+
+            // تحديث الجسيمات (انفجارات)
+            particles.forEach((p, idx) => {
+                p.position.add(p.vel);
+                p.life -= 0.02;
+                p.scale.setScalar(p.life);
+                if(p.life <= 0) { scene.remove(p); particles.splice(idx, 1); }
+            });
+
+            updateRadar();
+            renderer.render(scene, camera);
+        }
+
+        function damagePlayer(amount) {
+            playerStats.health -= amount;
+            updateHUD();
+            if(playerStats.health <= 0) {
+                playerStats.isDead = true;
+                document.getElementById('death-screen').style.display = 'flex';
+            }
+        }
+
+        function checkCollision(dist) {
+            citizens.forEach(c => {
+              
